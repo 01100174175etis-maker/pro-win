@@ -1,5 +1,6 @@
 import os
 import glob
+import re
 import tkinter as tk
 from tkinter import messagebox, ttk
 from datetime import datetime
@@ -24,7 +25,7 @@ except ImportError:
             super().__init__(master, **kwargs)
 
         def get_date(self):
-            # محاولة قراءة تاريخ بصيغة YYYY-MM-DD من النص، وإلا إرجاع ا��آن
+            # محاولة قراءة تاريخ بصيغة YYYY-MM-DD من النص، وإلا إرجاع الآن
             try:
                 txt = self.get().strip()
                 return datetime.strptime(txt, '%Y-%m-%d')
@@ -32,6 +33,37 @@ except ImportError:
                 return datetime.now()
 
 ITEMS_FILE = "items_list.txt"
+
+# مساعدة: تنظيف أسماء شيتات Excel لجعلها صالحة (<=31 حرف، بدون أحرف ممنوعة) وضمان التفرد
+def _sanitize_sheet_name(name, used_names=None, max_len=31):
+    if used_names is None:
+        used_names = set()
+
+    if not isinstance(name, str):
+        name = str(name)
+
+    # إزالة الأحرف الممنوعة في أسماء sheets: : \ / ? * [ ]
+    clean = re.sub(r'[:\\/\?\*\[\]]', '_', name)
+    clean = clean.strip()
+    if not clean:
+        clean = "Sheet"
+
+    # اقتطاع للطول الأقصى
+    if len(clean) > max_len:
+        clean = clean[:max_len]
+
+    base = clean
+    suffix = 1
+    # ضمان التفرد ضمن used_names
+    while clean in used_names:
+        # احجز بعض المساحة للبادئة الرقمية
+        tail = f"_{suffix}"
+        avail = max_len - len(tail)
+        clean = (base[:avail] + tail) if avail > 0 else (base[:max_len])
+        suffix += 1
+
+    used_names.add(clean)
+    return clean
 
 # 1. دالة جلب قائمة العملاء بأمان من أسماء الملفات فقط (تم تصحيحها لتعمل خارج IDLE)
 def load_customers():
@@ -211,7 +243,7 @@ def delete_selected_item():
     except Exception as e:
         messagebox.showerror("خطأ في الحذف", f"فشل حذف الصنف: {e}")
 
-# 6. دالة إنشاء الملف الرئيسي بصفحة لكل عميل + صفحة الملخص العام (تم تصحيحها لتعمل خارج IDLE)
+# 6. دالة إنشاء الملف الرئيسي بصفحة لكل عميل + صفحة الملخص العام (تم تدعيمها بتنظيف أسماء الشيتات)
 def make_master_file():
     files = glob.glob("*.xlsx")
     master_file = "الملف_الرئيسي_المحاسبي.xlsx"
@@ -222,11 +254,17 @@ def make_master_file():
         return
 
     summary = []
+    used_sheet_names = set()
     try:
         with pd.ExcelWriter(master_file, engine='openpyxl') as writer:
             for file in valid_files:
-                name = os.path.splitext(file)[0]
-                df = pd.read_excel(file)
+                try:
+                    name = os.path.splitext(file)[0]
+                    df = pd.read_excel(file)
+                except Exception as e:
+                    # سجل وتخطى الملفات التي تعطي أخطاء عند القراءة
+                    print(f"skipping file {file} due read error: {e}")
+                    continue
                 
                 total_sales = df["الإجمالي"].sum() if "الإجمالي" in df.columns else 0
                 total_qty = df["الكمية"].sum() if "الكمية" in df.columns else 0
@@ -237,12 +275,27 @@ def make_master_file():
                     "إجمالي الحساب": total_sales
                 })
             
-            pd.DataFrame(summary).to_excel(writer, sheet_name="الملخص_العام", index=False)
+            # اكتب ملخص عام بصيغة آمنة لاسم الشيت
+            summary_sheet = _sanitize_sheet_name("الملخص_العام", used_names=used_sheet_names)
+            pd.DataFrame(summary).to_excel(writer, sheet_name=summary_sheet, index=False)
             
+            # الآن أضف كل شيت عميل مع أسماء شيتات مُنقّحة ومتفردة
             for file in valid_files:
-                name = os.path.splitext(file)[0]  # تم إصلاح الخلل هنا بإضافة [0] ليعمل خارج IDLE تماماً
-                df = pd.read_excel(file)
-                df.to_excel(writer, sheet_name=name, index=False)
+                try:
+                    name = os.path.splitext(file)[0]
+                    df = pd.read_excel(file)
+                except Exception as e:
+                    print(f"skipping file {file} due read error: {e}")
+                    continue
+
+                sheet_name = _sanitize_sheet_name(name, used_names=used_sheet_names)
+                try:
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+                except Exception as e:
+                    # إذا فشل الكتابة باسم الشيت (نادر)، سجّل وفرض اسم افتراضي
+                    fallback = _sanitize_sheet_name(f"Sheet_{len(used_sheet_names)+1}", used_names=used_sheet_names)
+                    print(f"failed to write sheet {sheet_name}, using fallback {fallback}: {e}")
+                    df.to_excel(writer, sheet_name=fallback, index=False)
                 
         messagebox.showinfo("نجاح", f"تم إنشاء الملف الرئيسي الشامل بنجاح باسم:\n{master_file}")
     except Exception as e:
