@@ -8,8 +8,28 @@ import pandas as pd
 # استيراد أداة التقويم الرسومية بآلية مستقرة
 try:
     from tkcalendar import DateEntry
+    HAVE_TKCAL = True
 except ImportError:
-    pass
+    HAVE_TKCAL = False
+    # بديل بسيط لـ DateEntry عندما لا تكون tkcalendar مثبّتة
+    class DateEntry(ttk.Entry):
+        def __init__(self, master=None, **kwargs):
+            # قبول وسيلة التهيئة الشائعة ولكن تجاهلها إن لم تكن مطلوبة
+            kwargs.pop('date_pattern', None)
+            kwargs.pop('year', None)
+            kwargs.pop('month', None)
+            kwargs.pop('day', None)
+            kwargs.pop('mindate', None)
+            kwargs.pop('maxdate', None)
+            super().__init__(master, **kwargs)
+
+        def get_date(self):
+            # محاولة قراءة تاريخ بصيغة YYYY-MM-DD من النص، وإلا إرجاع الآن
+            try:
+                txt = self.get().strip()
+                return datetime.strptime(txt, '%Y-%m-%d')
+            except Exception:
+                return datetime.now()
 
 ITEMS_FILE = "items_list.txt"
 
@@ -23,8 +43,8 @@ def load_customers():
                 name = os.path.splitext(file)[0]
                 customer_list.append(name)
         combo_customer['values'] = customer_list
-    except:
-        pass
+    except Exception as e:
+        print("load_customers error:", e)
 
 # 2. دالة جلب وتحديث قائمة الأصناف من ملف نصي خارجي
 def load_items(new_item=None):
@@ -35,8 +55,10 @@ def load_items(new_item=None):
                 for line in f:
                     if line.strip():
                         items.add(line.strip())
-        except:
-            pass
+        except Exception as e:
+            print("load_items read error:", e)
+            # استمرار العمل مع مجموعة فارغة
+            items = set()
             
     if new_item and new_item.strip():
         items.add(new_item.strip())
@@ -44,7 +66,9 @@ def load_items(new_item=None):
             with open(ITEMS_FILE, "w", encoding="utf-8") as f:
                 for item in sorted(list(items)):
                     f.write(f"{item}\n")
-        except:
+        except Exception as e:
+            print("load_items write error:", e)
+            # لا نوقف التطبيق بسبب فشل حفظ قائمة الأصناف
             pass
             
     combo_type['values'] = sorted(list(items))
@@ -63,7 +87,13 @@ def show_customer_table(event=None):
     try:
         df = pd.read_excel(file_name)
         for _, row in df.iterrows():
-            tree.insert("", tk.END, values=(row.get("التاريخ", ""), row.get("الإجمالي", ""), row.get("السعر", ""), row.get("الكمية", ""), row.get("نوع الصنف", "")))
+            tree.insert("", tk.END, values=(
+                row.get("التاريخ", ""),
+                row.get("الإجمالي", 0),
+                row.get("السعر", 0),
+                row.get("الكمية", 0),
+                row.get("نوع الصنف", "")
+            ))
     except Exception as e:
         messagebox.showerror("خطأ", f"تعذر فتح ملف العميل: {e}")
 
@@ -76,8 +106,13 @@ def save_data():
     
     # جلب التاريخ بصيغة نصية YYYY-MM-DD من مربع التقويم مباشرة
     try:
-        date_str = cal_date.get_date().strftime('%Y-%m-%d')
-    except:
+        # إذا كان DateEntry حقيقياً فإنه يحتوي get_date()
+        date_obj = cal_date.get_date()
+        try:
+            date_str = date_obj.strftime('%Y-%m-%d')
+        except Exception:
+            date_str = datetime.now().strftime('%Y-%m-%d')
+    except Exception:
         date_str = datetime.now().strftime('%Y-%m-%d')
 
     if not customer or not item_type or not qty_str or not price_str:
@@ -106,8 +141,8 @@ def save_data():
         try:
             df = pd.read_excel(file_name)
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        except:
-            messagebox.showerror("خطأ", "تأكد من إغلاق ملف إكسل العميل أولاً!")
+        except Exception as e:
+            messagebox.showerror("خطأ", f"تأكد من إغلاق ملف إكسل العميل أولاً!\n{e}")
             return
     else:
         df = pd.DataFrame([new_row])
@@ -128,11 +163,13 @@ def save_data():
 
 # 5. دالة حذف السطر المحدد من الجدول ومن ملف الإكسل (تم استعادتها وتصحيحها)
 def delete_selected_item():
-    selected_item = tree.selection()
-    if not selected_item:
+    selected_items = tree.selection()
+    if not selected_items:
         messagebox.showwarning("تنبيه", "الرجاء تحديد السطر المراد حذفه من الجدول أولاً!")
         return
         
+    # خذ العنصر الأول المحدد
+    sel = selected_items[0]
     customer = combo_customer.get().strip()
     file_name = f"{customer}.xlsx"
     
@@ -144,7 +181,7 @@ def delete_selected_item():
         return
         
     try:
-        item_values = tree.item(selected_item)['values']
+        item_values = tree.item(sel)['values']
         target_date = str(item_values[0])
         target_total = float(item_values[1])
         target_price = float(item_values[2])
@@ -236,15 +273,24 @@ frame_i.pack(fill="x", padx=10, pady=5)
 
 combo_type = ttk.Combobox(frame_i, justify="right", width=25)
 combo_type.grid(row=0, column=0, pady=5, padx=5)
-tk.Label(frame_i, text="نوع الصنف:").grid(row=0, column=1, sticky="e", padx=5)
+try:
+    tk.Label(frame_i, text="نوع الصنف:").grid(row=0, column=1, sticky="e", padx=5)
+except Exception:
+    pass
 
 ent_qty = tk.Entry(frame_i, justify="right", width=28)
 ent_qty.grid(row=1, column=0, pady=5, padx=5)
-tk.Label(frame_i, text="الكمية:").grid(row=1, column=1, sticky="e", padx=5)
+try:
+    tk.Label(frame_i, text="الكمية:").grid(row=1, column=1, sticky="e", padx=5)
+except Exception:
+    pass
 
 ent_price = tk.Entry(frame_i, justify="right", width=28)
 ent_price.grid(row=2, column=0, pady=5, padx=5)
-tk.Label(frame_i, text="السعر لِلْوحدة:").grid(row=2, column=1, sticky="e", padx=5)
+try:
+    tk.Label(frame_i, text="السعر لِلْوحدة:").grid(row=2, column=1, sticky="e", padx=5)
+except Exception:
+    pass
 
 # مربع التقويم المالي والرسومي (DateEntry)
 cal_date = DateEntry(frame_i, width=25, background='darkgreen',
@@ -253,7 +299,10 @@ cal_date = DateEntry(frame_i, width=25, background='darkgreen',
                      mindate=datetime(2024, 7, 1), maxdate=datetime.now(),
                      date_pattern='yyyy-mm-dd', justify="center")
 cal_date.grid(row=3, column=0, pady=5, padx=5)
-tk.Label(frame_i, text="اختر التاريخ:").grid(row=3, column=1, sticky="e", padx=5)
+try:
+    tk.Label(frame_i, text="اختر التاريخ:").grid(row=3, column=1, sticky="e", padx=5)
+except Exception:
+    pass
 
 # الأزرار الرئيسية
 btn_save = tk.Button(root, text="تسجيل و حفظ", bg="#5a376e", fg="white", width=40, command=save_data)
