@@ -1,0 +1,4 @@
+ttkbootstrap
+tkcalendar
+pandas
+openpyxl
